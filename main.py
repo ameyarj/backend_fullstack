@@ -43,10 +43,25 @@ class Influencer(BaseModel):
     trust_score: float
     platform: str
 
+class ResearchConfig(BaseModel):
+    date_range: str
+    claim_limit: int
+    journal_sources: List[str]
+    min_trust_score: float
+    categories: List[str]
+
 ai_service = PerplexityService()
 journal_api = JournalAPI()
 batch_processor = BatchProcessor(ai_service, journal_api)
 analytics_service = AnalyticsService()
+
+research_config = ResearchConfig(
+    date_range="30d",
+    claim_limit=100,
+    journal_sources=["pubmed", "cochrane", "science_direct"],
+    min_trust_score=60.0,
+    categories=["Nutrition", "Medicine", "Mental Health", "Fitness", "Alternative Medicine"]
+)
 
 def init_sample_data():
     sample_influencers = [
@@ -243,6 +258,65 @@ async def get_influencer_dashboard(influencer_id: str):
 async def set_research_config(config: Dict):
     """Set research configuration"""
     return {"message": "Config updated successfully", "config": config}
+
+@app.post("/api/research/config")
+async def update_research_config(config: ResearchConfig):
+    global research_config
+    research_config = config
+    return {"message": "Research configuration updated", "config": config}
+
+@app.get("/api/research/config")
+async def get_research_config():
+    return research_config
+
+@app.post("/api/influencers/{influencer_id}/analyze")
+async def analyze_influencer(
+    influencer_id: str,
+    full_scan: bool = False,
+    config: ResearchConfig = None
+):
+    """Comprehensive influencer analysis"""
+    if influencer_id not in influencers:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+        
+    config = config or research_config
+    influencer = influencers[influencer_id]
+    
+    content = []
+    if influencer.platform.lower() == "twitter":
+        twitter_api = TwitterAPI()
+        tweets = await twitter_api.fetch_recent_posts(influencer.name)
+        content.extend(tweets)
+        
+    claims = []
+    for text in content:
+        extracted_claims = ai_service.extract_health_claim(text)
+        for claim in extracted_claims:
+            if not ai_service.check_duplicate(claim, [c.content for c in claims]):
+                analysis = await ai_service.analyze_claim(claim)
+                if analysis["trust_score"] >= config.min_trust_score:
+                    claims.append(Claim(
+                        id=str(len(claims) + 1),
+                        influencer_id=influencer_id,
+                        content=claim,
+                        category=analysis["category"],
+                        verification_status=analysis["verification_status"],
+                        trust_score=analysis["trust_score"],
+                        source=influencer.platform,
+                        date=datetime.now().isoformat()
+                    ))
+                    
+    return {
+        "influencer": influencer,
+        "analyzed_claims": claims,
+        "analysis_summary": {
+            "total_claims": len(claims),
+            "verified_claims": len([c for c in claims if c.verification_status == "Verified"]),
+            "avg_trust_score": sum(c.trust_score for c in claims) / len(claims) if claims else 0,
+            "categories": {cat: len([c for c in claims if c.category == cat]) 
+                         for cat in config.categories}
+        }
+    }
 
 if __name__ == "__main__":
     import uvicorn

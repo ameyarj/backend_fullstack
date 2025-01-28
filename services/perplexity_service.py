@@ -90,18 +90,21 @@ class PerplexityService:
                 "Content-Type": "application/json"
             }
             
-            prompt = f"""Analyze this health claim and provide detailed analysis:
-            
+            prompt = f"""Analyze this health claim with scientific rigor:
+
             Claim: {content}
             
-            Please provide:
+            Provide:
             1. Category (Nutrition/Medicine/Mental Health/Fitness/Alternative Medicine)
-            2. Scientific validation based on medical literature
-            3. Trust score (0-100)
-            4. Verification status (Verified/Questionable/Debunked)
-            5. Scientific evidence (list of relevant studies if any)
+            2. Key scientific studies or meta-analyses supporting/refuting this claim
+            3. Trust score (0-100) based on:
+               - Quality of available evidence
+               - Scientific consensus
+               - Replication of results
+            4. Verification status with reasoning
+            5. Potential caveats or limitations
             
-            Format the response as JSON with these exact keys: category, verification_status, trust_score, scientific_evidence"""
+            Format as JSON with keys: category, verification_status, trust_score, evidence, limitations"""
 
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -209,3 +212,24 @@ class PerplexityService:
                 score += 10
                 
         return min(max(score, 0), 100)
+
+    def extract_health_claim(self, text: str) -> List[str]:
+        """Enhanced health claim extraction"""
+        claim_indicators = [
+            r"(studies show|research indicates|according to|proven to|may|can|will) .+",
+            r".+ (increases|decreases|improves|reduces|boosts|helps|prevents) .+",
+            r".+ is (good|bad|beneficial|harmful|effective) for .+",
+            r"(regular|daily|weekly) .+ (can|will|may) .+",
+            r"(taking|consuming|using) .+ (improves|enhances|boosts) .+"
+        ]
+        
+        claims = []
+        sentences = re.split(r'[.!?]+', text)
+        
+        for sentence in sentences:
+            for pattern in claim_indicators:
+                if re.search(pattern, sentence, re.IGNORECASE):
+                    claims.append(sentence.strip())
+                    break
+                    
+        return claims
