@@ -26,7 +26,6 @@ class PerplexityService:
         self.social_apis = {
             "twitter": TwitterAPI()
         }
-        # Initialize sentence transformer only if needed
         self.model = None
 
     def _init_sentence_transformer(self):

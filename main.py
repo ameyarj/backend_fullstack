@@ -7,7 +7,7 @@ from datetime import datetime
 import re
 from difflib import SequenceMatcher
 from services.perplexity_service import PerplexityService
-from services.social_media import TwitterAPI
+from services.social_media import TwitterAPI, YouTubeAPI
 from services.journal_apis import JournalAPI
 from services.batch_processor import BatchProcessor
 from services.analytics_service import AnalyticsService
@@ -184,32 +184,47 @@ async def scan_influencer_content(influencer_id: str):
     influencer = influencers[influencer_id]
     
     try:
-        if influencer.platform.lower() != "twitter":
+        content = []
+        if influencer.platform.lower() == "twitter":
+            twitter_api = TwitterAPI()
+            tweets = await twitter_api.fetch_recent_posts(influencer.name)
+            content.extend(tweets)
+        elif influencer.platform.lower() == "youtube":
+            youtube_api = YouTubeAPI()
+            descriptions = await youtube_api.fetch_recent_posts(influencer.name)
+            content.extend(descriptions)
+        else:
             raise HTTPException(
                 status_code=400, 
-                detail="Currently only supporting Twitter platform"
+                detail=f"Unsupported platform: {influencer.platform}"
             )
 
-        twitter_api = TwitterAPI()
-        tweets = await twitter_api.fetch_recent_posts(influencer.name)
-        
+        if not content:
+            return {"message": "No content found", "claims": []}
+
         new_claims = []
-        for tweet in tweets:
-            analysis = await ai_service.analyze_claim(tweet)
+        existing_claim_contents = [c.content for c in claims.values()]  # Get existing claim contents
+        
+        for text in content:
+            extracted_claims = ai_service.extract_health_claim(text)
             
-            if analysis["trust_score"] > 0: 
-                claim = Claim(
-                    id=str(len(claims) + 1),
-                    influencer_id=influencer_id,
-                    content=tweet,
-                    category=analysis["category"],
-                    verification_status=analysis["verification_status"],
-                    trust_score=analysis["trust_score"],
-                    source="Twitter Scan",
-                    date=datetime.now().isoformat()
-                )
-                claims[claim.id] = claim
-                new_claims.append(claim)
+            for claim in extracted_claims:
+                if not ai_service.check_duplicate(claim, existing_claim_contents):
+                    analysis = await ai_service.analyze_claim(claim)
+                    
+                    if analysis["trust_score"] > 0: 
+                        claim_obj = Claim(
+                            id=str(len(claims) + 1),
+                            influencer_id=influencer_id,
+                            content=claim,
+                            category=analysis["category"],
+                            verification_status=analysis["verification_status"],
+                            trust_score=analysis["trust_score"],
+                            source=f"{influencer.platform} Scan",
+                            date=datetime.now().isoformat()
+                        )
+                        claims[claim_obj.id] = claim_obj
+                        new_claims.append(claim_obj)
         
         return {"message": f"Found {len(new_claims)} new claims", "claims": new_claims}
     except Exception as e:
@@ -269,11 +284,41 @@ async def update_research_config(config: ResearchConfig):
 async def get_research_config():
     return research_config
 
+@app.get("/api/influencers/{influencer_id}/analyze")
+async def get_influencer_analysis(influencer_id: str):
+    """Get analysis for an influencer"""
+    if influencer_id not in influencers:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+        
+    influencer = influencers[influencer_id]
+    influencer_claims = [c for c in claims.values() if c.influencer_id == influencer_id]
+    
+    categories = {}
+    verification_status = {"Verified": 0, "Questionable": 0, "Debunked": 0}
+    total_trust_score = 0
+    
+    for claim in influencer_claims:
+        categories[claim.category] = categories.get(claim.category, 0) + 1
+        verification_status[claim.verification_status] = verification_status.get(claim.verification_status, 0) + 1
+        total_trust_score += claim.trust_score
+    
+    avg_trust_score = total_trust_score / len(influencer_claims) if influencer_claims else 0
+    
+    return {
+        "influencer": influencer,
+        "total_claims": len(influencer_claims),
+        "categories": categories,
+        "verification_status": verification_status,
+        "avg_trust_score": avg_trust_score,
+        "recent_claims": influencer_claims[-5:], 
+        "analysis_date": datetime.now().isoformat()
+    }
+
 @app.post("/api/influencers/{influencer_id}/analyze")
 async def analyze_influencer(
     influencer_id: str,
     full_scan: bool = False,
-    config: ResearchConfig = None
+    config: Optional[ResearchConfig] = None
 ):
     """Comprehensive influencer analysis"""
     if influencer_id not in influencers:
